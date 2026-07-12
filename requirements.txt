@@ -1,0 +1,9 @@
+# 鎖 0.10.18：新版 (0.10.3x, 2026) 移除了 legacy solutions API
+# TODO v0.4: 遷移到 Tasks API (PoseLandmarker) 後解鎖
+mediapipe==0.10.18
+opencv-python>=4.8,<4.13
+numpy<2
+pandas
+scipy
+matplotlib
+streamlit

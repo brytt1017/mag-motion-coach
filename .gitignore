@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*_annotated.mp4
+*_angles.csv
+.DS_Store

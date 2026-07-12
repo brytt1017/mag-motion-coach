@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>比對播放器 — MAG Motion Coach</title>
+<style>
+  :root { --bg:#111; --panel:#1c1c1e; --fg:#eee; --dim:#888; --accent:#ff9f0a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font-family:"PingFang TC","Microsoft JhengHei",sans-serif; }
+  header { padding:.6rem 1rem; display:flex; align-items:center; gap:1rem; }
+  header h1 { font-size:1rem; margin:0; font-weight:600; }
+  header .hint { color:var(--dim); font-size:.8rem; }
+  .videos { display:flex; gap:4px; padding:0 4px; }
+  .slot { flex:1; position:relative; background:#000; border-radius:8px; overflow:hidden;
+          min-height:200px; display:flex; align-items:center; justify-content:center; }
+  .slot video { width:100%; max-height:62vh; display:block; }
+  .slot.mirror video { transform: scaleX(-1); }
+  .slot .drop { color:var(--dim); text-align:center; padding:3rem 1rem; cursor:pointer; }
+  .slot .drop b { color:var(--fg); }
+  .slot .badge { position:absolute; top:8px; left:8px; background:rgba(0,0,0,.6);
+                 padding:2px 8px; border-radius:6px; font-size:.75rem; }
+  .slot .time { position:absolute; bottom:8px; right:8px; background:rgba(0,0,0,.6);
+                padding:2px 8px; border-radius:6px; font-size:.75rem; font-variant-numeric:tabular-nums; }
+  .slot .tools { position:absolute; top:8px; right:8px; display:flex; gap:4px; }
+  .slot .vscrub { position:absolute; bottom:0; left:0; width:100%; margin:0;
+                  height:18px; opacity:.85; }
+  /* 疊影模式：兩支影片重疊在同一畫面 */
+  .videos.overlay { position:relative; height:62vh; }
+  .videos.overlay .slot { position:absolute; inset:0; background:transparent; }
+  .videos.overlay .slot video { width:100%; height:100%; max-height:none; object-fit:contain; }
+  .videos.overlay #slotB { pointer-events:none; }
+  .videos.overlay #slotB .badge, .videos.overlay #slotB .time,
+  .videos.overlay #slotB .tools, .videos.overlay #slotB .vscrub { display:none; }
+  .controls { padding:.7rem 1rem; display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
+  button { background:var(--panel); color:var(--fg); border:1px solid #333; border-radius:8px;
+           padding:.45rem .8rem; font-size:.9rem; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#000; border-color:var(--accent); font-weight:600; }
+  button.small { padding:.2rem .5rem; font-size:.75rem; }
+  .group { display:flex; gap:.25rem; align-items:center; background:var(--panel);
+           border-radius:8px; padding:.2rem .5rem; }
+  .group label { font-size:.8rem; color:var(--dim); }
+  input[type=range] { accent-color: var(--accent); }
+  .scrub { width:100%; padding:0 1rem .5rem; }
+  .scrub input { width:100%; }
+  .kbd { color:var(--dim); font-size:.75rem; padding:0 1rem 1rem; }
+  kbd { background:var(--panel); border:1px solid #333; border-radius:4px; padding:0 .35em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🤸 並排比對播放器</h1>
+  <span class="hint">把兩支影片拖進左右框（或點擊選檔）→ 各自對到同一個瞬間（如起跳）→ 按「設為同步點」</span>
+</header>
+
+<div class="videos">
+  <div class="slot" id="slotA">
+    <div class="drop">📂 拖入影片 A<br><b>（例如：這次的動作）</b></div>
+    <span class="badge">A</span><span class="time"></span>
+    <input type="range" class="vscrub" min="0" max="1000" value="0">
+    <div class="tools">
+      <button class="small" data-mirror>鏡像</button>
+    </div>
+  </div>
+  <div class="slot" id="slotB">
+    <div class="drop">📂 拖入影片 B<br><b>（例如：上次 / 示範）</b></div>
+    <span class="badge">B</span><span class="time"></span>
+    <input type="range" class="vscrub" min="0" max="1000" value="0">
+    <div class="tools">
+      <button class="small" data-mirror>鏡像</button>
+    </div>
+  </div>
+</div>
+
+<div class="scrub"><input type="range" id="scrub" min="0" max="1000" value="0"></div>
+
+<div id="analysis" style="display:none; padding:0 1rem .5rem;">
+  <canvas id="curveCanvas" style="width:100%; height:80px; background:var(--panel); border-radius:8px; cursor:crosshair;"></canvas>
+  <div id="analysisText" class="hint" style="padding:.4rem 0;"></div>
+  <div id="diffBtns" style="display:flex; gap:.4rem; flex-wrap:wrap;"></div>
+</div>
+
+<div class="controls">
+  <button class="primary" id="playBtn">▶︎ 播放</button>
+  <div class="group">
+    <button id="back10">≪10格</button>
+    <button id="back1">‹1格</button>
+    <button id="fwd1">1格›</button>
+    <button id="fwd10">10格≫</button>
+  </div>
+  <div class="group">
+    <label>速度</label>
+    <input type="range" id="speed" min="0.1" max="1" step="0.05" value="0.5" style="width:110px">
+    <span id="speedVal">0.5×</span>
+  </div>
+  <button id="autoSyncBtn">⚡ 自動同步</button>
+  <button id="syncBtn">🔗 手動設同步點</button>
+  <button id="unsyncBtn" disabled>解除同步</button>
+  <div class="group"><label><input type="checkbox" id="loopChk"> 🔁 循環動作段</label></div>
+  <button id="ghostBtn">👻 疊影</button>
+  <div class="group" id="ghostCtl" style="display:none">
+    <label>B 透明度</label>
+    <input type="range" id="ghostOp" min="0.1" max="0.9" step="0.05" value="0.5" style="width:90px">
+  </div>
+  <span class="hint" id="status">未同步：左右可各自捲動對齊</span>
+</div>
+
+<p class="kbd"><kbd>空白鍵</kbd> 播放/暫停 ｜ <kbd>←</kbd><kbd>→</kbd> 逐格 ｜ <kbd>Shift+←→</kbd> 10 格 ｜ 未同步時按住 <kbd>A</kbd> 或 <kbd>B</kbd> 再按方向鍵只動單邊 ｜ 影片不會上傳，全部在你電腦裡處理</p>
+
+<script>
+(() => {
+  const FRAME = 1 / 60;   // 逐格步長，iPhone 影片多為 60fps
+  const state = { synced: false, offset: 0, playing: false };
+  const slots = {};
+
+  // 防止影片拖到框外時，瀏覽器直接開啟檔案取代整個頁面
+  window.addEventListener("dragover", e => e.preventDefault());
+  window.addEventListener("drop", e => e.preventDefault());
+
+  const say = msg => { const s = document.getElementById("status"); if (s) s.textContent = msg; };
+
+  function fmt(t) {
+    if (!isFinite(t)) return "0:00.00";
+    const m = Math.floor(t / 60), s = t % 60;
+    return `${m}:${s.toFixed(2).padStart(5, "0")}`;
+  }
+
+  function makeSlot(id) {
+    const el = document.getElementById(id);
+    const drop = el.querySelector(".drop");
+    const timeEl = el.querySelector(".time");
+    const bar = el.querySelector(".vscrub");
+    const slot = { el, video: null, timeEl, bar };
+    const key = id === "slotA" ? "A" : "B";
+
+    bar.addEventListener("input", () => {
+      const v = slot.video;
+      if (!v || !isFinite(v.duration)) return;
+      pause();
+      v.currentTime = bar.value / 1000 * v.duration;
+      onSlotScrub(key);
+    });
+
+    function load(file) {
+      if (!file || !file.type.startsWith("video")) return;
+      if (slot.video) slot.video.remove();
+      const v = document.createElement("video");
+      v.src = URL.createObjectURL(file);
+      v.playsInline = true; v.muted = true; v.preload = "auto";
+      el.insertBefore(v, drop);
+      drop.style.display = "none";
+      slot.video = v;
+      v.addEventListener("timeupdate", () => {
+        timeEl.textContent = fmt(v.currentTime);
+        if (isFinite(v.duration)) bar.value = v.currentTime / v.duration * 1000;
+      });
+      v.addEventListener("loadedmetadata", () =>
+        say(`${id === "slotA" ? "A" : "B"} 載入成功：${file.name}（${fmt(v.duration)}）`));
+      v.addEventListener("error", () =>
+        say(`❌ ${file.name} 無法解碼——這個瀏覽器不支援它的編碼格式（試試 Safari，iPhone 影片是 HEVC）`));
+    }
+
+    el.addEventListener("dragover", e => e.preventDefault());
+    el.addEventListener("drop", e => { e.preventDefault(); load(e.dataTransfer.files[0]); });
+    drop.addEventListener("click", () => {
+      const inp = document.createElement("input");
+      inp.type = "file"; inp.accept = "video/*";
+      inp.onchange = () => load(inp.files[0]);
+      inp.click();
+    });
+    el.querySelector("[data-mirror]").addEventListener("click", () =>
+      el.classList.toggle("mirror"));
+    return slot;
+  }
+
+  slots.A = makeSlot("slotA");
+  slots.B = makeSlot("slotB");
+  const vids = () => [slots.A.video, slots.B.video].filter(Boolean);
+
+  // === 同步邏輯 ===
+  const status = document.getElementById("status");
+  const syncBtn = document.getElementById("syncBtn");
+  const unsyncBtn = document.getElementById("unsyncBtn");
+
+  syncBtn.addEventListener("click", () => {
+    if (!slots.A.video || !slots.B.video) { status.textContent = "要先載入兩支影片"; return; }
+    state.offset = slots.B.video.currentTime - slots.A.video.currentTime;
+    state.synced = true;
+    unsyncBtn.disabled = false;
+    status.textContent = `已同步（B 比 A 偏移 ${state.offset >= 0 ? "+" : ""}${state.offset.toFixed(2)}s）`;
+  });
+  unsyncBtn.addEventListener("click", () => {
+    state.synced = false; unsyncBtn.disabled = true;
+    status.textContent = "未同步：左右可各自捲動對齊";
+  });
+
+  // 各影片自己的時間軸被拖動時的行為：
+  // 未同步 → 各拖各的（用來對齊同步點）
+  // 已同步 → 拖 A 帶著 B 走；拖 B = 微調偏移量（重新對齊，不解除同步）
+  function onSlotScrub(key) {
+    if (!state.synced) return;
+    if (key === "A") alignB();
+    else if (slots.A.video && slots.B.video) {
+      state.offset = slots.B.video.currentTime - slots.A.video.currentTime;
+      say(`已同步（B 比 A 偏移 ${state.offset >= 0 ? "+" : ""}${state.offset.toFixed(2)}s）`);
+    }
+  }
+
+  function alignB() {
+    if (state.synced && slots.A.video && slots.B.video)
+      slots.B.video.currentTime =
+        Math.max(0, Math.min(slots.A.video.currentTime + state.offset, slots.B.video.duration || 0));
+  }
+
+  // === 自動同步：動作能量曲線互相關 ===
+  // 原理：逐格取樣縮圖，算相鄰幀差異（動作能量），兩條曲線滑動比對找最佳時間差。
+  const SAMPLE_FPS = 15, SAMPLE_W = 64;
+
+  function seekTo(v, t) {
+    return new Promise(res => {
+      const done = () => { v.removeEventListener("seeked", done); res(); };
+      v.addEventListener("seeked", done);
+      v.currentTime = Math.min(Math.max(t, 0), v.duration - 0.001);
+    });
+  }
+
+  async function motionCurve(v, label) {
+    const w = SAMPLE_W;
+    const h = Math.max(2, Math.round(w * v.videoHeight / v.videoWidth)) || 36;
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    const step = 1 / SAMPLE_FPS, n = Math.floor(v.duration / step);
+    const curve = new Float32Array(n);
+    let prev = null;
+    for (let i = 0; i < n; i++) {
+      await seekTo(v, i * step);
+      ctx.drawImage(v, 0, 0, w, h);
+      const d = ctx.getImageData(0, 0, w, h).data;
+      const g = new Float32Array(w * h);
+      for (let j = 0; j < w * h; j++)
+        g[j] = d[j*4] * .299 + d[j*4+1] * .587 + d[j*4+2] * .114;
+      if (prev) { let e = 0; for (let j = 0; j < g.length; j++) e += Math.abs(g[j] - prev[j]); curve[i] = e / g.length; }
+      prev = g;
+      if (i % 15 === 0) say(`分析 ${label} 中… ${Math.round(i / n * 100)}%`);
+    }
+    return curve;
+  }
+
+  function zscore(a) {
+    const m = a.reduce((s, x) => s + x, 0) / a.length;
+    const sd = Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / a.length) || 1;
+    return a.map(x => (x - m) / sd);
+  }
+
+  function bestLag(a, b) {
+    // 回傳 lag（樣本數）：b[i + lag] 對應 a[i]
+    const minOverlap = 2 * SAMPLE_FPS;  // 至少重疊 2 秒
+    let best = { lag: 0, score: -Infinity };
+    for (let lag = -(b.length - minOverlap); lag <= a.length - minOverlap; lag++) {
+      let s = 0, cnt = 0;
+      for (let i = Math.max(0, -lag); i < Math.min(a.length, b.length - lag); i++) {
+        s += a[i] * b[i + lag]; cnt++;
+      }
+      if (cnt >= minOverlap && s / cnt > best.score) best = { lag, score: s / cnt };
+    }
+    return best;
+  }
+
+  document.getElementById("autoSyncBtn").addEventListener("click", async () => {
+    const A = slots.A.video, B = slots.B.video;
+    if (!A || !B) { say("要先載入兩支影片"); return; }
+    pause();
+    const btn = document.getElementById("autoSyncBtn");
+    btn.disabled = true;
+    const tA = A.currentTime, tB = B.currentTime;
+    try {
+      const ca = zscore(Array.from(await motionCurve(A, "A")));
+      const cb = zscore(Array.from(await motionCurve(B, "B")));
+      const { lag, score } = bestLag(ca, cb);
+      // b[i+lag] ≈ a[i] → tB ≈ tA + lag/FPS → offset = B - A = lag/FPS
+      state.offset = lag / SAMPLE_FPS;
+      state.synced = true;
+      unsyncBtn.disabled = false;
+      analyze(ca, cb, lag, score);
+      await seekTo(A, state.loopStart); alignB();
+      say(`⚡ 自動同步完成（B 偏移 ${state.offset >= 0 ? "+" : ""}${state.offset.toFixed(2)}s，相似度 ${score.toFixed(2)}）${score < 0.3 ? "——相似度偏低，建議逐格檢查，不準就手動設" : ""}`);
+    } catch (e) {
+      await seekTo(A, tA); await seekTo(B, tB);
+      say(`❌ 自動同步失敗：${e.message}`);
+    } finally { btn.disabled = false; }
+  });
+
+  // === 深入分析：曲線疊圖、動作段、差異最大點、循環範圍 ===
+  function findSegment(z) {
+    // 動作段 = 能量 z 分數持續 > 0.5 的最早到最晚（至少連續 3 個樣本）
+    const TH = 0.5, MIN = 3;
+    let start = -1, end = -1, run = 0;
+    for (let i = 0; i < z.length; i++) {
+      if (z[i] > TH) { run++; if (run >= MIN && start < 0) start = i - MIN + 1; }
+      else run = 0;
+    }
+    run = 0;
+    for (let i = z.length - 1; i >= 0; i--) {
+      if (z[i] > TH) { run++; if (run >= MIN) { end = i + MIN - 1; break; } }
+      else run = 0;
+    }
+    return start >= 0 && end > start ? { start, end } : null;
+  }
+
+  function analyze(ca, cb, lag, score) {
+    const F = SAMPLE_FPS;
+    // 重疊區（以 A 的取樣索引表示）
+    const i0 = Math.max(0, -lag), i1 = Math.min(ca.length, cb.length - lag);
+    // 差異曲線（3 點移動平均）
+    const d = [];
+    for (let i = i0; i < i1; i++) d.push(Math.abs(ca[i] - cb[i + lag]));
+    const ds = d.map((_, k) => (d[Math.max(0, k-1)] + d[k] + d[Math.min(d.length-1, k+1)]) / 3);
+
+    // 動作段（以 A 曲線為準）
+    const seg = findSegment(ca.slice(i0, i1));
+    const segB = findSegment(cb);
+    state.loopStart = seg ? Math.max(0, (i0 + seg.start) / F - 0.5) : i0 / F;
+    state.loopEnd = seg ? Math.min(i1 / F, (i0 + seg.end) / F + 0.7) : i1 / F;
+    state.loop = true;
+    document.getElementById("loopChk").checked = true;
+
+    // 差異最大的 3 個時刻（彼此至少隔 0.7 秒）
+    const peaks = [];
+    const order = ds.map((v, k) => [v, k]).sort((x, y) => y[0] - x[0]);
+    for (const [v, k] of order) {
+      if (peaks.length >= 3) break;
+      if (peaks.every(p => Math.abs(p.k - k) > 0.7 * F)) peaks.push({ k, v });
+    }
+    peaks.sort((x, y) => x.k - y.k);
+
+    // 文字摘要
+    const durA = seg ? (seg.end - seg.start) / F : null;
+    const durB = segB ? (segB.end - segB.start) / F : null;
+    let txt = `相似度 ${score.toFixed(2)} ｜ 循環範圍 ${fmt(state.loopStart)}–${fmt(state.loopEnd)}`;
+    if (durA && durB) {
+      const diff = durA - durB;
+      txt += ` ｜ 動作段長度：A ${durA.toFixed(2)}s、B ${durB.toFixed(2)}s`;
+      if (Math.abs(diff) > 0.08)
+        txt += `（${diff > 0 ? "B 快" : "B 慢"} ${Math.abs(diff).toFixed(2)}s——節奏不同，值得逐格看）`;
+    }
+    document.getElementById("analysisText").textContent = txt;
+
+    // 差異點按鈕
+    const btns = document.getElementById("diffBtns");
+    btns.innerHTML = "";
+    peaks.forEach((p, n) => {
+      const t = (i0 + p.k) / F;
+      const b = document.createElement("button");
+      b.className = "small";
+      b.textContent = `差異點 ${n + 1} → ${fmt(t)}`;
+      b.addEventListener("click", async () => { pause(); await seekTo(slots.A.video, t); alignB(); });
+      btns.appendChild(b);
+    });
+
+    // 疊圖
+    const cv = document.getElementById("curveCanvas");
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = cv.clientWidth * dpr; cv.height = 80 * dpr;
+    const g = cv.getContext("2d");
+    g.scale(dpr, dpr);
+    const W = cv.clientWidth, H = 80, n = i1 - i0;
+    const y = z => H - 6 - Math.max(0, Math.min(z + 1, 4)) / 4 * (H - 12);
+    const draw = (arr, off, color) => {
+      g.beginPath(); g.strokeStyle = color; g.lineWidth = 1.5;
+      for (let i = 0; i < n; i++) {
+        const px = i / n * W, py = y(arr[i0 + i + off]);
+        i ? g.lineTo(px, py) : g.moveTo(px, py);
+      }
+      g.stroke();
+    };
+    g.clearRect(0, 0, W, H);
+    draw(ca, 0, "#ff9f0a");   // A 橘
+    draw(cb, lag, "#4da3ff"); // B 藍
+    g.fillStyle = "rgba(255,80,80,.9)";
+    peaks.forEach(p => { g.beginPath(); g.arc(p.k / n * W, 8, 4, 0, 7); g.fill(); });
+    g.fillStyle = "#888"; g.font = "10px sans-serif";
+    g.fillText("橘=A 藍=B 紅點=差異最大", 6, 12);
+    cv.onclick = async e => {
+      const t = (i0 + (e.offsetX / W) * n) / F;
+      pause(); await seekTo(slots.A.video, t); alignB();
+    };
+    document.getElementById("analysis").style.display = "block";
+  }
+
+  document.getElementById("loopChk").addEventListener("change", e => state.loop = e.target.checked);
+
+  // === 播放控制 ===
+  const playBtn = document.getElementById("playBtn");
+  const speed = document.getElementById("speed");
+  const speedVal = document.getElementById("speedVal");
+
+  function setSpeed() {
+    speedVal.textContent = `${(+speed.value).toFixed(2).replace(/0$/,"")}×`;
+    vids().forEach(v => v.playbackRate = +speed.value);
+  }
+  speed.addEventListener("input", setSpeed);
+
+  function play() {
+    if (!vids().length) { say("先載入至少一支影片"); return; }
+    // 循環模式下，從動作段起點開始播
+    if (state.loop && state.loopEnd && slots.A.video &&
+        (slots.A.video.currentTime >= state.loopEnd - 0.05 || slots.A.video.currentTime < state.loopStart))
+      slots.A.video.currentTime = state.loopStart;
+    alignB(); setSpeed();
+    vids().forEach(v => v.play().catch(err => say(`❌ 播放失敗：${err.name} — ${err.message}`)));
+    state.playing = true; playBtn.textContent = "⏸ 暫停";
+  }
+  function pause() {
+    vids().forEach(v => v.pause());
+    alignB();
+    state.playing = false; playBtn.textContent = "▶︎ 播放";
+  }
+  playBtn.addEventListener("click", () => state.playing ? pause() : play());
+
+  function step(nFrames, only) {
+    pause();
+    const dt = nFrames * FRAME;
+    if (only) {
+      const v = slots[only].video;
+      if (v) v.currentTime = Math.max(0, v.currentTime + dt);
+      return;
+    }
+    if (slots.A.video) slots.A.video.currentTime = Math.max(0, slots.A.video.currentTime + dt);
+    if (state.synced) alignB();
+    else if (slots.B.video) slots.B.video.currentTime = Math.max(0, slots.B.video.currentTime + dt);
+  }
+  document.getElementById("back1").addEventListener("click", () => step(-1));
+  document.getElementById("fwd1").addEventListener("click", () => step(1));
+  document.getElementById("back10").addEventListener("click", () => step(-10));
+  document.getElementById("fwd10").addEventListener("click", () => step(10));
+
+  // === 時間軸（以 A 為主） ===
+  const scrub = document.getElementById("scrub");
+  scrub.addEventListener("input", () => {
+    const a = slots.A.video; if (!a || !isFinite(a.duration)) return;
+    a.currentTime = scrub.value / 1000 * a.duration;
+    alignB();
+  });
+  setInterval(() => {
+    const a = slots.A.video;
+    if (!a || !isFinite(a.duration) || !state.playing) return;
+    scrub.value = a.currentTime / a.duration * 1000;
+    // 循環：播到動作段結尾就跳回起點
+    if (state.loop && state.loopEnd && a.currentTime >= state.loopEnd) {
+      a.currentTime = state.loopStart;
+      alignB();
+    }
+  }, 100);
+
+  // === 疊影模式 ===
+  const videosEl = document.querySelector(".videos");
+  const ghostBtn = document.getElementById("ghostBtn");
+  const ghostCtl = document.getElementById("ghostCtl");
+  const ghostOp = document.getElementById("ghostOp");
+  const slotBEl = document.getElementById("slotB");
+
+  ghostBtn.addEventListener("click", () => {
+    if (!slots.A.video || !slots.B.video) { say("疊影需要先載入兩支影片"); return; }
+    const on = videosEl.classList.toggle("overlay");
+    ghostBtn.classList.toggle("primary", on);
+    ghostCtl.style.display = on ? "flex" : "none";
+    slotBEl.style.opacity = on ? ghostOp.value : "";
+    say(on ? "👻 疊影模式：建議先自動同步，用透明度滑桿調 B 的顯示強度" : "回到並排模式");
+  });
+  ghostOp.addEventListener("input", () => {
+    if (videosEl.classList.contains("overlay")) slotBEl.style.opacity = ghostOp.value;
+  });
+
+  // === 鍵盤 ===
+  const held = new Set();
+  document.addEventListener("keydown", e => {
+    if (e.key === "a" || e.key === "A") held.add("A");
+    if (e.key === "b" || e.key === "B") held.add("B");
+    if (e.code === "Space") { e.preventDefault(); state.playing ? pause() : play(); }
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      const n = (e.key === "ArrowRight" ? 1 : -1) * (e.shiftKey ? 10 : 1);
+      const only = held.has("A") ? "A" : held.has("B") ? "B" : null;
+      step(n, only);
+    }
+  });
+  document.addEventListener("keyup", e => {
+    if (e.key === "a" || e.key === "A") held.delete("A");
+    if (e.key === "b" || e.key === "B") held.delete("B");
+  });
+})();
+</script>
+</body>
+</html>
