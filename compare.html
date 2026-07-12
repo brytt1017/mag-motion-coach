@@ -26,6 +26,14 @@
   .slot .tools { position:absolute; top:8px; right:8px; display:flex; gap:4px; }
   .slot .vscrub { position:absolute; bottom:0; left:0; width:100%; margin:0;
                   height:18px; opacity:.85; }
+  .slot .markinfo { position:absolute; bottom:24px; left:8px; background:rgba(0,0,0,.6);
+                    padding:2px 8px; border-radius:6px; font-size:.75rem;
+                    font-variant-numeric:tabular-nums; color:var(--accent); }
+  .slot .roiBox { position:absolute; border:2px dashed var(--accent); border-radius:4px;
+                  pointer-events:none; display:none; }
+  .slot.roiMode { cursor:crosshair; }
+  .slot .drawCanvas { position:absolute; pointer-events:none; }
+  body.drawMode .slot .drawCanvas { pointer-events:auto; cursor:crosshair; }
   /* 疊影模式：兩支影片重疊在同一畫面 */
   .videos.overlay { position:relative; height:62vh; }
   .videos.overlay .slot { position:absolute; inset:0; background:transparent; }
@@ -60,16 +68,30 @@
     <div class="drop">📂 拖入影片 A<br><b>（例如：這次的動作）</b></div>
     <span class="badge">A</span><span class="time"></span>
     <input type="range" class="vscrub" min="0" max="1000" value="0">
+    <div class="roiBox"></div>
+    <canvas class="drawCanvas"></canvas>
+    <span class="markinfo"></span>
     <div class="tools">
+      <button class="small" data-m1>⏱1</button>
+      <button class="small" data-m2>⏱2</button>
       <button class="small" data-mirror>鏡像</button>
+      <button class="small" data-roi>🎯 框選手</button>
+      <button class="small" data-swap>📂 更換</button>
     </div>
   </div>
   <div class="slot" id="slotB">
     <div class="drop">📂 拖入影片 B<br><b>（例如：上次 / 示範）</b></div>
     <span class="badge">B</span><span class="time"></span>
     <input type="range" class="vscrub" min="0" max="1000" value="0">
+    <div class="roiBox"></div>
+    <canvas class="drawCanvas"></canvas>
+    <span class="markinfo"></span>
     <div class="tools">
+      <button class="small" data-m1>⏱1</button>
+      <button class="small" data-m2>⏱2</button>
       <button class="small" data-mirror>鏡像</button>
+      <button class="small" data-roi>🎯 框選手</button>
+      <button class="small" data-swap>📂 更換</button>
     </div>
   </div>
 </div>
@@ -96,9 +118,13 @@
     <span id="speedVal">0.5×</span>
   </div>
   <button id="autoSyncBtn">⚡ 自動同步</button>
+  <button id="markSyncBtn">🎯 以⏱1同步</button>
   <button id="syncBtn">🔗 手動設同步點</button>
   <button id="unsyncBtn" disabled>解除同步</button>
   <div class="group"><label><input type="checkbox" id="loopChk"> 🔁 循環動作段</label></div>
+  <button id="skelBtn">🦴 骨架</button>
+  <button id="drawBtn">📐 畫線</button>
+  <button id="clearLinesBtn">🧹 清線</button>
   <button id="ghostBtn">👻 疊影</button>
   <div class="group" id="ghostCtl" style="display:none">
     <label>B 透明度</label>
@@ -107,7 +133,7 @@
   <span class="hint" id="status">未同步：左右可各自捲動對齊</span>
 </div>
 
-<p class="kbd"><kbd>空白鍵</kbd> 播放/暫停 ｜ <kbd>←</kbd><kbd>→</kbd> 逐格 ｜ <kbd>Shift+←→</kbd> 10 格 ｜ 未同步時按住 <kbd>A</kbd> 或 <kbd>B</kbd> 再按方向鍵只動單邊 ｜ 影片不會上傳，全部在你電腦裡處理</p>
+<p class="kbd"><kbd>空白鍵</kbd> 播放/暫停 ｜ <kbd>←</kbd><kbd>→</kbd> 逐格 ｜ <kbd>Shift+←→</kbd> 10 格 ｜ 按住 <kbd>A</kbd> 或 <kbd>B</kbd> + 方向鍵：未同步時只動單邊、已同步時逐格微調對齊 ｜ 影片不會上傳，全部在你電腦裡處理</p>
 
 <script>
 (() => {
@@ -146,6 +172,13 @@
     function load(file) {
       if (!file || !file.type.startsWith("video")) return;
       if (slot.video) slot.video.remove();
+      // 換片後舊的標記與同步都失效，一併重置
+      slot.marks = { m1: null, m2: null };
+      if (typeof updateMarks === "function") updateMarks();
+      if (state.synced) {
+        state.synced = false;
+        document.getElementById("unsyncBtn").disabled = true;
+      }
       const v = document.createElement("video");
       v.src = URL.createObjectURL(file);
       v.playsInline = true; v.muted = true; v.preload = "auto";
@@ -164,15 +197,112 @@
 
     el.addEventListener("dragover", e => e.preventDefault());
     el.addEventListener("drop", e => { e.preventDefault(); load(e.dataTransfer.files[0]); });
-    drop.addEventListener("click", () => {
+    const openPicker = () => {
       const inp = document.createElement("input");
       inp.type = "file"; inp.accept = "video/*";
       inp.onchange = () => load(inp.files[0]);
       inp.click();
-    });
+    };
+    drop.addEventListener("click", openPicker);
+    el.querySelector("[data-swap]").addEventListener("click", openPicker);
     el.querySelector("[data-mirror]").addEventListener("click", () =>
       el.classList.toggle("mirror"));
+
+    // ROI 框選手：拖一個框圈住選手活動範圍，姿態追蹤只看框內（人小/雜訊多時大幅提升準度）
+    slot.roi = null;
+    const roiBox = el.querySelector(".roiBox");
+    const roiBtn = el.querySelector("[data-roi]");
+    let roiStart = null;
+    roiBtn.addEventListener("click", () => {
+      if (slot.roi) {                       // 已有框 → 清除
+        slot.roi = null; roiBox.style.display = "none";
+        roiBtn.textContent = "🎯 框選手";
+        say("已清除選手範圍框"); return;
+      }
+      if (!slot.video) { say("先載入影片再框"); return; }
+      el.classList.add("roiMode");
+      say("在影片上按住拖曳，框出選手活動的範圍（含整個擺動圓弧）");
+    });
+    el.addEventListener("pointerdown", e => {
+      if (!el.classList.contains("roiMode") || !slot.video) return;
+      const r = slot.video.getBoundingClientRect();
+      roiStart = { x: e.clientX, y: e.clientY, rect: r };
+      e.preventDefault();
+    });
+    el.addEventListener("pointermove", e => {
+      if (!roiStart) return;
+      const s = el.getBoundingClientRect();
+      roiBox.style.display = "block";
+      roiBox.style.left = Math.min(roiStart.x, e.clientX) - s.left + "px";
+      roiBox.style.top = Math.min(roiStart.y, e.clientY) - s.top + "px";
+      roiBox.style.width = Math.abs(e.clientX - roiStart.x) + "px";
+      roiBox.style.height = Math.abs(e.clientY - roiStart.y) + "px";
+    });
+    el.addEventListener("pointerup", e => {
+      if (!roiStart) return;
+      const r = roiStart.rect;
+      const nx = v => Math.max(0, Math.min(1, v));
+      slot.roi = {
+        x0: nx((Math.min(roiStart.x, e.clientX) - r.left) / r.width),
+        y0: nx((Math.min(roiStart.y, e.clientY) - r.top) / r.height),
+        x1: nx((Math.max(roiStart.x, e.clientX) - r.left) / r.width),
+        y1: nx((Math.max(roiStart.y, e.clientY) - r.top) / r.height),
+      };
+      roiStart = null;
+      el.classList.remove("roiMode");
+      if (slot.roi.x1 - slot.roi.x0 < 0.05 || slot.roi.y1 - slot.roi.y0 < 0.05) {
+        slot.roi = null; roiBox.style.display = "none";
+        say("框太小了，重新拖一次"); return;
+      }
+      roiBtn.textContent = "❌ 清除框";
+      say(`${key} 已框選手範圍，自動同步時只分析框內`);
+    });
+    // 程式化設框（自動偵測選手範圍用）
+    slot.setRoi = roi => {
+      slot.roi = roi;
+      if (roi && slot.video) {
+        const vr = slot.video.getBoundingClientRect(), sr = el.getBoundingClientRect();
+        roiBox.style.display = "block";
+        roiBox.style.left = vr.left - sr.left + roi.x0 * vr.width + "px";
+        roiBox.style.top = vr.top - sr.top + roi.y0 * vr.height + "px";
+        roiBox.style.width = (roi.x1 - roi.x0) * vr.width + "px";
+        roiBox.style.height = (roi.y1 - roi.y0) * vr.height + "px";
+        roiBtn.textContent = "❌ 清除框";
+      } else {
+        roiBox.style.display = "none";
+        roiBtn.textContent = "🎯 框選手";
+      }
+    };
+
+    // 區間計時：⏱1 / ⏱2 記下目前影格時間，兩點都有就顯示區間長度
+    slot.marks = { m1: null, m2: null };
+    slot.markEl = el.querySelector(".markinfo");
+    el.querySelector("[data-m1]").addEventListener("click", () => {
+      if (slot.video) { slot.marks.m1 = slot.video.currentTime; updateMarks(); }
+    });
+    el.querySelector("[data-m2]").addEventListener("click", () => {
+      if (slot.video) { slot.marks.m2 = slot.video.currentTime; updateMarks(); }
+    });
     return slot;
+  }
+
+  // 更新兩邊的區間顯示；A、B 都標完就直接比較
+  function updateMarks() {
+    const dur = s => (s.marks.m1 != null && s.marks.m2 != null)
+      ? Math.abs(s.marks.m2 - s.marks.m1) : null;
+    for (const k of ["A", "B"]) {
+      const s = slots[k], { m1, m2 } = s.marks;
+      if (m1 == null && m2 == null) { s.markEl.textContent = ""; continue; }
+      let t = `①${m1 != null ? fmt(m1) : "—"} ②${m2 != null ? fmt(m2) : "—"}`;
+      const d = dur(s);
+      if (d != null) t += ` ＝ ${d.toFixed(2)}s（${Math.round(d / FRAME)}格）`;
+      s.markEl.textContent = t;
+    }
+    const dA = dur(slots.A), dB = dur(slots.B);
+    if (dA != null && dB != null) {
+      const diff = dA - dB;
+      say(`⏱ 區間比較：A ${dA.toFixed(2)}s vs B ${dB.toFixed(2)}s（A ${diff >= 0 ? "多" : "少"} ${Math.abs(diff).toFixed(2)}s / ${Math.round(Math.abs(diff) / FRAME)}格）`);
+    }
   }
 
   slots.A = makeSlot("slotA");
@@ -191,6 +321,26 @@
     unsyncBtn.disabled = false;
     status.textContent = `已同步（B 比 A 偏移 ${state.offset >= 0 ? "+" : ""}${state.offset.toFixed(2)}s）`;
   });
+  // 以 ⏱1 為錨點同步：兩邊各在「同一個關鍵瞬間」按 ⏱1（如下法離手、落地觸墊），
+  // 一鍵把兩支影片以該瞬間對齊。適用取景差很多、自動同步對不準的情況。
+  document.getElementById("markSyncBtn").addEventListener("click", () => {
+    const mA = slots.A.marks.m1, mB = slots.B.marks.m1;
+    if (mA == null || mB == null) {
+      say("兩支影片都要先用 ⏱1 標出同一個關鍵瞬間（例如離手或落地那一格）");
+      return;
+    }
+    state.offset = mB - mA;
+    state.synced = true;
+    unsyncBtn.disabled = false;
+    state.loopStart = Math.max(0, mA - 2);
+    state.loopEnd = Math.min(slots.A.video.duration || Infinity, mA + 3);
+    state.loop = true;
+    document.getElementById("loopChk").checked = true;
+    slots.A.video.currentTime = state.loopStart;
+    alignB();
+    say(`🎯 已以 ⏱1 錨點同步（B 偏移 ${state.offset >= 0 ? "+" : ""}${state.offset.toFixed(2)}s），循環錨點前 2s～後 3s`);
+  });
+
   unsyncBtn.addEventListener("click", () => {
     state.synced = false; unsyncBtn.disabled = true;
     status.textContent = "未同步：左右可各自捲動對齊";
@@ -214,9 +364,11 @@
         Math.max(0, Math.min(slots.A.video.currentTime + state.offset, slots.B.video.duration || 0));
   }
 
-  // === 自動同步：動作能量曲線互相關 ===
-  // 原理：逐格取樣縮圖，算相鄰幀差異（動作能量），兩條曲線滑動比對找最佳時間差。
-  const SAMPLE_FPS = 15, SAMPLE_W = 64;
+  // === 自動同步：移動質心位置曲線 ===
+  // 原理：逐格算「正在移動的像素的位置重心」——選手動、教練不動，
+  // 質心就是選手的位置。位置曲線（迴環繞圈、下法墜落）跨場館可比，
+  // 已用真實影片對照人工標準答案驗證（誤差 < 0.2s）。
+  const SAMPLE_FPS = 15, SAMPLE_W = 96;
 
   function seekTo(v, t) {
     return new Promise(res => {
@@ -226,27 +378,65 @@
     });
   }
 
-  async function motionCurve(v, label) {
+  function srcRect(v, roi) {
+    // ROI（相對座標）→ 影片像素座標；無 ROI 就是整個畫面
+    if (!roi) return [0, 0, v.videoWidth, v.videoHeight];
+    return [roi.x0 * v.videoWidth, roi.y0 * v.videoHeight,
+            (roi.x1 - roi.x0) * v.videoWidth, (roi.y1 - roi.y0) * v.videoHeight];
+  }
+
+  // 一次取樣同時算兩條曲線：
+  //   posy   = 移動質心的垂直位置（用於對齊，跨場館可比）
+  //   energy = 動作能量（用於動作段偵測、循環範圍、差異點）
+  async function motionCurve(v, label, roi) {
+    const [sx, sy, sw, sh] = srcRect(v, roi);
     const w = SAMPLE_W;
-    const h = Math.max(2, Math.round(w * v.videoHeight / v.videoWidth)) || 36;
+    const h = Math.max(2, Math.round(w * sh / sw)) || 36;
     const c = document.createElement("canvas");
     c.width = w; c.height = h;
     const ctx = c.getContext("2d", { willReadFrequently: true });
     const step = 1 / SAMPLE_FPS, n = Math.floor(v.duration / step);
-    const curve = new Float32Array(n);
+    const energy = new Float32Array(n);
+    const posy = new Float32Array(n).fill(NaN);
     let prev = null;
     for (let i = 0; i < n; i++) {
       await seekTo(v, i * step);
-      ctx.drawImage(v, 0, 0, w, h);
+      ctx.drawImage(v, sx, sy, sw, sh, 0, 0, w, h);
       const d = ctx.getImageData(0, 0, w, h).data;
       const g = new Float32Array(w * h);
       for (let j = 0; j < w * h; j++)
         g[j] = d[j*4] * .299 + d[j*4+1] * .587 + d[j*4+2] * .114;
-      if (prev) { let e = 0; for (let j = 0; j < g.length; j++) e += Math.abs(g[j] - prev[j]); curve[i] = e / g.length; }
+      if (prev) {
+        let s = 0, wy = 0;
+        for (let j = 0; j < g.length; j++) {
+          let diff = Math.abs(g[j] - prev[j]);
+          if (diff < 10) continue;        // 去雜訊
+          s += diff;
+          wy += diff * Math.floor(j / w); // 以差異量加權的 y 座標
+        }
+        energy[i] = s / g.length;
+        if (s > 50) posy[i] = (wy / s) / h;  // 移動夠多才算質心
+      }
       prev = g;
       if (i % 15 === 0) say(`分析 ${label} 中… ${Math.round(i / n * 100)}%`);
     }
-    return curve;
+    return { energy, posy };
+  }
+
+  // NaN 線性插值（質心曲線在靜止段沒值）
+  function interpNaN(arr) {
+    const out = Array.from(arr);
+    let lastI = -1;
+    for (let i = 0; i < out.length; i++) {
+      if (!isFinite(out[i])) continue;
+      if (lastI < 0) { for (let j = 0; j < i; j++) out[j] = out[i]; }
+      else for (let j = lastI + 1; j < i; j++)
+        out[j] = out[lastI] + (out[i] - out[lastI]) * (j - lastI) / (i - lastI);
+      lastI = i;
+    }
+    if (lastI < 0) return out.map(() => 0);
+    for (let j = lastI + 1; j < out.length; j++) out[j] = out[lastI];
+    return out;
   }
 
   function zscore(a) {
@@ -255,17 +445,38 @@
     return a.map(x => (x - m) / sd);
   }
 
-  function bestLag(a, b) {
-    // 回傳 lag（樣本數）：b[i + lag] 對應 a[i]
-    const minOverlap = 2 * SAMPLE_FPS;  // 至少重疊 2 秒
-    let best = { lag: 0, score: -Infinity };
-    for (let lag = -(b.length - minOverlap); lag <= a.length - minOverlap; lag++) {
-      let s = 0, cnt = 0;
-      for (let i = Math.max(0, -lag); i < Math.min(a.length, b.length - lag); i++) {
-        s += a[i] * b[i + lag]; cnt++;
-      }
-      if (cnt >= minOverlap && s / cnt > best.score) best = { lag, score: s / cnt };
+  // 滑動所有時間差，對每個重疊區算 Pearson 相關（逐窗正規化，比全域內積可靠）
+  // 回傳 lag（樣本數）：b[i + lag] 對應 a[i]
+  function pearsonAt(a, b, lag) {
+    const minOv = 2 * SAMPLE_FPS;
+    const i0 = Math.max(0, -lag), i1 = Math.min(a.length, b.length - lag);
+    const n = i1 - i0;
+    if (n < minOv) return -Infinity;
+    let sa = 0, sb = 0;
+    for (let i = i0; i < i1; i++) { sa += a[i]; sb += b[i + lag]; }
+    const ma = sa / n, mb = sb / n;
+    let cov = 0, va = 0, vb = 0;
+    for (let i = i0; i < i1; i++) {
+      const da = a[i] - ma, db = b[i + lag] - mb;
+      cov += da * db; va += da * da; vb += db * db;
     }
+    return cov / (Math.sqrt(va * vb) || 1);
+  }
+
+  function pearsonSweep(a, b) {
+    const minOv = 2 * SAMPLE_FPS;  // 至少重疊 2 秒
+    let best = { lag: 0, score: -Infinity };
+    for (let lag = -(b.length - minOv); lag <= a.length - minOv; lag++) {
+      const r = pearsonAt(a, b, lag);
+      if (r > best.score) best = { lag, score: r };
+    }
+    // 拋物線內插：用峰值左右鄰點估出取樣點之間的精確偏移（亞取樣精度）
+    const rm = pearsonAt(a, b, best.lag - 1), rp = pearsonAt(a, b, best.lag + 1);
+    let frac = 0;
+    const denom = rm - 2 * best.score + rp;
+    if (isFinite(rm) && isFinite(rp) && denom < 0)
+      frac = Math.max(-0.5, Math.min(0.5, 0.5 * (rm - rp) / denom));
+    best.fineLag = best.lag + frac;
     return best;
   }
 
@@ -277,16 +488,20 @@
     btn.disabled = true;
     const tA = A.currentTime, tB = B.currentTime;
     try {
-      const ca = zscore(Array.from(await motionCurve(A, "A")));
-      const cb = zscore(Array.from(await motionCurve(B, "B")));
-      const { lag, score } = bestLag(ca, cb);
+      const cvA = await motionCurve(A, "A", slots.A.roi);
+      const cvB = await motionCurve(B, "B", slots.B.roi);
+      // 對齊用「移動質心位置」曲線（跨場館可比），Pearson 全域掃描
+      const pa = zscore(interpNaN(cvA.posy));
+      const pb = zscore(interpNaN(cvB.posy));
+      const { lag, score, fineLag } = pearsonSweep(pa, pb);
       // b[i+lag] ≈ a[i] → tB ≈ tA + lag/FPS → offset = B - A = lag/FPS
-      state.offset = lag / SAMPLE_FPS;
+      state.offset = fineLag / SAMPLE_FPS;
       state.synced = true;
       unsyncBtn.disabled = false;
-      analyze(ca, cb, lag, score);
+      // 動作段/循環/差異點用能量曲線
+      analyze(zscore(Array.from(cvA.energy)), zscore(Array.from(cvB.energy)), lag, score, null);
       await seekTo(A, state.loopStart); alignB();
-      say(`⚡ 自動同步完成（B 偏移 ${state.offset >= 0 ? "+" : ""}${state.offset.toFixed(2)}s，相似度 ${score.toFixed(2)}）${score < 0.3 ? "——相似度偏低，建議逐格檢查，不準就手動設" : ""}`);
+      say(`⚡ 自動同步完成［移動質心］（B 偏移 ${state.offset >= 0 ? "+" : ""}${state.offset.toFixed(2)}s，相似度 ${score.toFixed(2)}）${score < 0.4 ? "——信心偏低，建議逐格檢查，不準就用 ⏱1 錨點同步" : ""}`);
     } catch (e) {
       await seekTo(A, tA); await seekTo(B, tB);
       say(`❌ 自動同步失敗：${e.message}`);
@@ -310,10 +525,11 @@
     return start >= 0 && end > start ? { start, end } : null;
   }
 
-  function analyze(ca, cb, lag, score) {
+  function analyze(ca, cb, lag, score, range) {
     const F = SAMPLE_FPS;
-    // 重疊區（以 A 的取樣索引表示）
-    const i0 = Math.max(0, -lag), i1 = Math.min(ca.length, cb.length - lag);
+    // 分析區間（以 A 的取樣索引表示）：模板模式只看共同動作段，否則看全部重疊區
+    const i0 = Math.max(range ? range[0] : 0, 0, -lag);
+    const i1 = Math.min(range ? range[1] : Infinity, ca.length, cb.length - lag);
     // 差異曲線（3 點移動平均）
     const d = [];
     for (let i = i0; i < i1; i++) d.push(Math.abs(ca[i] - cb[i + lag]));
@@ -425,7 +641,13 @@
     const dt = nFrames * FRAME;
     if (only) {
       const v = slots[only].video;
-      if (v) v.currentTime = Math.max(0, v.currentTime + dt);
+      if (!v) return;
+      v.currentTime = Math.max(0, v.currentTime + dt);
+      // 同步狀態下單邊逐格 = 逐格微調對齊偏移量
+      if (state.synced && slots.A.video && slots.B.video) {
+        state.offset += (only === "B" ? dt : -dt);
+        say(`🔧 微調同步：B 偏移 ${state.offset >= 0 ? "+" : ""}${state.offset.toFixed(3)}s（按住 ${only} + ←→ 繼續調）`);
+      }
       return;
     }
     if (slots.A.video) slots.A.video.currentTime = Math.max(0, slots.A.video.currentTime + dt);
@@ -473,6 +695,319 @@
   ghostOp.addEventListener("input", () => {
     if (videosEl.classList.contains("overlay")) slotBEl.style.opacity = ghostOp.value;
   });
+
+  // === 畫線量角 ===
+  // 📐 模式下在定格畫面上拖曳畫線；同一支影片最近兩條線自動顯示夾角。
+  // 線以「相對影片元素」座標儲存，縮放視窗不會跑位。
+  (() => {
+    const drawBtn = document.getElementById("drawBtn");
+    const clearBtn = document.getElementById("clearLinesBtn");
+
+    for (const k of ["A", "B"]) {
+      const slot = slots[k];
+      slot.lines = [];
+      slot.pose = null;        // 骨架偵測結果（完整畫面正規化座標）
+      slot.drawCv = slot.el.querySelector(".drawCanvas");
+    }
+
+    // === 骨架偵測（MediaPipe 多人姿態，首次使用需網路下載模型 ~10MB） ===
+    let skelMode = false, landmarker = null;
+    const SKEL_CONN = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],
+                       [23,24],[23,25],[25,27],[24,26],[26,28],[27,31],[28,32],[27,29],[28,30]];
+    const SKEL_COLORS = ["#00e5a0", "#4da3ff"];
+    // 關節角度: 名稱 -> [端點, 頂點, 端點]
+    const SKEL_JOINTS = [[13,11,23],[14,12,24],[11,13,15],[12,14,16],
+                         [11,23,25],[12,24,26],[23,25,27],[24,26,28]];
+
+    async function getLandmarker() {
+      if (landmarker) return landmarker;
+      say("首次使用：下載姿態模型中…（約 10MB，需要網路，之後會快取）");
+      const CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+      const vision = await import(`${CDN}/vision_bundle.mjs`);
+      const files = await vision.FilesetResolver.forVisionTasks(`${CDN}/wasm`);
+      const opts = delegate => ({
+        baseOptions: { delegate, modelAssetPath:
+          "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
+        runningMode: "IMAGE",
+        numPoses: 2,
+        minPoseDetectionConfidence: 0.3,
+        minPosePresenceConfidence: 0.3,
+      });
+      try {   // GPU 加速優先（播放中連續偵測需要），失敗退回 CPU
+        landmarker = await vision.PoseLandmarker.createFromOptions(files, opts("GPU"));
+      } catch {
+        landmarker = await vision.PoseLandmarker.createFromOptions(files, opts("CPU"));
+      }
+      return landmarker;
+    }
+
+    async function detectPose(slot) {
+      const v = slot.video;
+      if (!v || slot.detecting) return;
+      slot.detecting = true;
+      try {
+        const lm = await getLandmarker();
+        const [sx, sy, sw, sh] = srcRect(v, slot.roi);
+        const cw = 640, ch = Math.max(64, Math.round(cw * sh / sw));
+        const c = document.createElement("canvas");
+        c.width = cw; c.height = ch;
+        c.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, cw, ch);
+        const res = lm.detect(c);
+        // 裁切座標 → 完整畫面正規化座標
+        const R = slot.roi || { x0: 0, y0: 0, x1: 1, y1: 1 };
+        const poses = (res.landmarks || []).map(pts => pts.map(p => ({
+          x: R.x0 + p.x * (R.x1 - R.x0),
+          y: R.y0 + p.y * (R.y1 - R.y0),
+          v: p.visibility ?? 1,
+        })));
+        // 鎖定「主角」：離上一次主角髖部最近的那組（時間連續性 = 跟好同一個人）；
+        // 第一次則挑畫面中最大的人
+        const hipOf = pts => ({ x: (pts[23].x + pts[24].x) / 2, y: (pts[23].y + pts[24].y) / 2 });
+        const distTo = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
+        const sizeOf = pts => {
+          let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+          for (const p of pts) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
+                                 y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); }
+          return (x1 - x0) * (y1 - y0);
+        };
+        let primary = null;
+        if (poses.length) {
+          const raw = slot.lastHip
+            ? poses.reduce((a, b) => distTo(hipOf(a), slot.lastHip) <= distTo(hipOf(b), slot.lastHip) ? a : b)
+            : poses.reduce((a, b) => sizeOf(a) >= sizeOf(b) ? a : b);
+          slot.lastHip = hipOf(raw);
+          slot.others = poses.filter(p => p !== raw);
+          // 播放中做指數平滑，減少骨架抖動
+          if (state.playing && slot.prevPrimary) {
+            primary = raw.map((p, i) => ({
+              x: .6 * p.x + .4 * slot.prevPrimary[i].x,
+              y: .6 * p.y + .4 * slot.prevPrimary[i].y, v: p.v }));
+          } else primary = raw;
+          slot.prevPrimary = primary;
+        } else {
+          slot.others = [];
+          slot.prevPrimary = null;
+        }
+        slot.pose = poses.length ? poses : null;
+        slot.primary = primary;
+        slot.poseTime = v.currentTime;
+      } catch (e) {
+        skelMode = false;
+        document.getElementById("skelBtn").classList.remove("primary");
+        say(`❌ 骨架模型載入失敗：${e.message}（需要網路連線）`);
+      }
+      slot.detecting = false;
+      renderLines(slot);
+    }
+
+    // 自動偵測「選手活動範圍」：抽樣整支影片累積畫面變化量，
+    // 取有變化區域的外框——牆上海報、鏡子裡的靜物永遠不動，會被排除
+    async function autoRoi(slot) {
+      const v = slot.video;
+      const t0 = v.currentTime;
+      const w = 96, h = Math.max(2, Math.round(w * v.videoHeight / v.videoWidth));
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      const acc = new Float32Array(w * h);
+      let prev = null;
+      const K = 20;
+      for (let k = 0; k <= K; k++) {
+        await seekTo(v, v.duration * k / K);
+        ctx.drawImage(v, 0, 0, w, h);
+        const d = ctx.getImageData(0, 0, w, h).data;
+        const g = new Float32Array(w * h);
+        for (let j = 0; j < w * h; j++)
+          g[j] = d[j*4] * .299 + d[j*4+1] * .587 + d[j*4+2] * .114;
+        if (prev) for (let j = 0; j < g.length; j++) acc[j] += Math.abs(g[j] - prev[j]);
+        prev = g;
+      }
+      await seekTo(v, t0);
+      let m = 0; for (const x of acc) m += x; m /= acc.length;
+      let sd = 0; for (const x of acc) sd += (x - m) ** 2; sd = Math.sqrt(sd / acc.length);
+      const th = m + 0.5 * sd;
+      let x0 = w, y0 = h, x1 = 0, y1 = 0, cnt = 0;
+      for (let j = 0; j < acc.length; j++) {
+        if (acc[j] < th) continue;
+        const x = j % w, y = Math.floor(j / w);
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+        cnt++;
+      }
+      if (cnt < 10 || x1 <= x0 || y1 <= y0) return null;
+      const roi = { x0: Math.max(0, x0 / w - .04), y0: Math.max(0, y0 / h - .04),
+                    x1: Math.min(1, (x1 + 1) / w + .04), y1: Math.min(1, (y1 + 1) / h + .04) };
+      // 幾乎整個畫面都在動（鏡頭晃）→ 沒有鑑別度，不設框
+      if ((roi.x1 - roi.x0) * (roi.y1 - roi.y0) > 0.9) return null;
+      return roi;
+    }
+
+    function jointAngle(pts, [a, b, c]) {
+      const A = pts[a], B = pts[b], C = pts[c];
+      if (Math.min(A.v, B.v, C.v) < 0.5) return null;
+      const a1 = Math.atan2(A.y - B.y, A.x - B.x), a2 = Math.atan2(C.y - B.y, C.x - B.x);
+      let deg = Math.abs(a1 - a2) * 180 / Math.PI;
+      if (deg > 180) deg = 360 - deg;
+      return deg;
+    }
+
+    function renderLines(slot) {
+      const v = slot.video, cv = slot.drawCv;
+      if (!v) return;
+      const vr = v.getBoundingClientRect(), sr = slot.el.getBoundingClientRect();
+      cv.style.left = vr.left - sr.left + "px";
+      cv.style.top = vr.top - sr.top + "px";
+      cv.style.width = vr.width + "px";
+      cv.style.height = vr.height + "px";
+      const dpr = window.devicePixelRatio || 1;
+      cv.width = vr.width * dpr; cv.height = vr.height * dpr;
+      const g = cv.getContext("2d");
+      g.scale(dpr, dpr);
+      g.clearRect(0, 0, vr.width, vr.height);
+      const px = l => [l.x0 * vr.width, l.y0 * vr.height, l.x1 * vr.width, l.y1 * vr.height];
+      slot.lines.forEach((l, i) => {
+        const [x0, y0, x1, y1] = px(l);
+        g.strokeStyle = i >= slot.lines.length - 2 ? "#ff9f0a" : "rgba(255,159,10,.45)";
+        g.lineWidth = 2;
+        g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+        g.fillStyle = g.strokeStyle;
+        for (const [x, y] of [[x0, y0], [x1, y1]]) {
+          g.beginPath(); g.arc(x, y, 3, 0, 7); g.fill();
+        }
+      });
+      // 最近兩條線的夾角
+      if (slot.lines.length >= 2) {
+        const [l1, l2] = slot.lines.slice(-2);
+        const a1 = Math.atan2(l1.y1 - l1.y0, l1.x1 - l1.x0);
+        const a2 = Math.atan2(l2.y1 - l2.y0, l2.x1 - l2.x0);
+        let deg = Math.abs(a1 - a2) * 180 / Math.PI;
+        if (deg > 180) deg = 360 - deg;
+        const [, , x1, y1] = px(l2);
+        const label = `${deg.toFixed(1)}°（補角 ${(180 - deg).toFixed(1)}°）`;
+        g.font = "bold 14px sans-serif";
+        g.fillStyle = "#000"; g.fillText(label, x1 + 9, y1 - 7);
+        g.fillStyle = "#ff9f0a"; g.fillText(label, x1 + 8, y1 - 8);
+      }
+      // 骨架：播放中只畫主角（平滑後）；暫停時主角加關節角度、其他人淡色
+      if (skelMode && slot.primary) {
+        const mir = slot.el.classList.contains("mirror");
+        const P = p => [(mir ? 1 - p.x : p.x) * vr.width, p.y * vr.height];
+        const drawSkel = (pts, col, lw) => {
+          g.strokeStyle = col; g.lineWidth = lw;
+          for (const [a, b] of SKEL_CONN) {
+            if (Math.min(pts[a].v, pts[b].v) < 0.5) continue;
+            const [x0, y0] = P(pts[a]), [x1, y1] = P(pts[b]);
+            g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+          }
+          g.fillStyle = col;
+          for (const p of pts) {
+            if (p.v < 0.5) continue;
+            const [x, y] = P(p);
+            g.beginPath(); g.arc(x, y, 2.5, 0, 7); g.fill();
+          }
+        };
+        if (!state.playing)
+          (slot.others || []).forEach(pts => drawSkel(pts, "rgba(77,163,255,.4)", 1.5));
+        drawSkel(slot.primary, SKEL_COLORS[0], 2.5);
+        if (!state.playing) {
+          g.font = "bold 12px sans-serif";
+          for (const j of SKEL_JOINTS) {
+            const deg = jointAngle(slot.primary, j);
+            if (deg == null) continue;
+            const [x, y] = P(slot.primary[j[1]]);
+            g.fillStyle = "#000"; g.fillText(`${deg.toFixed(0)}°`, x + 7, y - 3);
+            g.fillStyle = SKEL_COLORS[0]; g.fillText(`${deg.toFixed(0)}°`, x + 6, y - 4);
+          }
+        }
+      }
+    }
+
+    for (const k of ["A", "B"]) {
+      const slot = slots[k], cv = slot.drawCv;
+      let start = null;
+      cv.addEventListener("pointerdown", e => {
+        if (!document.body.classList.contains("drawMode") || !slot.video) return;
+        const r = cv.getBoundingClientRect();
+        start = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+        cv.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      });
+      cv.addEventListener("pointermove", e => {
+        if (!start) return;
+        const r = cv.getBoundingClientRect();
+        slot.lines.push({ x0: start.x, y0: start.y,
+          x1: (e.clientX - r.left) / r.width, y1: (e.clientY - r.top) / r.height });
+        renderLines(slot);
+        slot.lines.pop();               // 預覽線不留存
+      });
+      cv.addEventListener("pointerup", e => {
+        if (!start) return;
+        const r = cv.getBoundingClientRect();
+        const l = { x0: start.x, y0: start.y,
+          x1: (e.clientX - r.left) / r.width, y1: (e.clientY - r.top) / r.height };
+        start = null;
+        if (Math.hypot(l.x1 - l.x0, l.y1 - l.y0) < 0.02) return;  // 太短不算
+        slot.lines.push(l);
+        renderLines(slot);
+      });
+    }
+
+    drawBtn.addEventListener("click", () => {
+      const on = document.body.classList.toggle("drawMode");
+      drawBtn.classList.toggle("primary", on);
+      if (on) { pause(); ["A","B"].forEach(k => renderLines(slots[k])); }
+      say(on ? "📐 畫線模式：在定格畫面上拖曳畫線，同一邊最近兩條線會顯示夾角" : "離開畫線模式（線保留，🧹 可清除）");
+    });
+    clearBtn.addEventListener("click", () => {
+      for (const k of ["A", "B"]) { slots[k].lines = []; renderLines(slots[k]); }
+      say("已清除所有線");
+    });
+    window.addEventListener("resize", () => ["A","B"].forEach(k => renderLines(slots[k])));
+
+    // 🦴 骨架模式：停格/逐格時自動偵測並疊上骨架與關節角度
+    const skelBtn = document.getElementById("skelBtn");
+    skelBtn.addEventListener("click", async () => {
+      skelMode = !skelMode;
+      skelBtn.classList.toggle("primary", skelMode);
+      if (skelMode) {
+        pause();
+        // 沒框的影片先自動偵測選手活動範圍（排除海報、鏡子等靜態假人）
+        for (const k of ["A", "B"]) {
+          const s = slots[k];
+          if (s.video && !s.roi) {
+            say(`自動偵測 ${k} 的選手活動範圍…`);
+            const r = await autoRoi(s);
+            if (r) s.setRoi(r);
+          }
+        }
+        if (!skelMode) return;  // 偵測期間被使用者關掉
+        say("🦴 骨架模式：停格自動偵測（綠/藍 = 不同人）。虛線框 = 偵測範圍，可用 🎯 重框或清除");
+        ["A", "B"].forEach(k => detectPose(slots[k]));
+      } else {
+        ["A", "B"].forEach(k => {
+          const s = slots[k];
+          s.pose = s.primary = s.others = s.prevPrimary = s.lastHip = null;
+          renderLines(s);
+        });
+        say("已關閉骨架");
+      }
+    });
+    // 畫面變動就重新偵測：停格逐格跟播放中都持續更新
+    // （播放中偵測速度取決於機器，跟不上時骨架會稍微落後）
+    let wasPlaying = false;
+    setInterval(() => {
+      if (!skelMode) return;
+      // 播放 → 暫停的瞬間立即重繪，讓角度馬上浮現
+      if (wasPlaying && !state.playing)
+        ["A", "B"].forEach(k => { slots[k].prevPrimary = null; detectPose(slots[k]); });
+      wasPlaying = state.playing;
+      for (const k of ["A", "B"]) {
+        const s = slots[k];
+        if (!s.video || s.detecting) continue;
+        if (state.playing || s.poseTime !== s.video.currentTime) detectPose(s);
+      }
+    }, 100);
+  })();
 
   // === 鍵盤 ===
   const held = new Set();

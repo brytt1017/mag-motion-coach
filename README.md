@@ -72,7 +72,3 @@ mag-motion-coach/
     ├── report.py
     └── annotate.py
 ```
-
-## 授權
-
-[MIT License](LICENSE)
