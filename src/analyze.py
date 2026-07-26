@@ -23,6 +23,7 @@ from pose_extract import extract
 from smoothing import postprocess
 from angles import compute_angles
 from landing import detect_landing
+from deductions import estimate as estimate_deductions
 from report import plot_angles, write_html
 from annotate import render
 
@@ -57,9 +58,13 @@ def run(video_path: Path, out_dir: Path | None = None, render_video: bool = True
     else:
         print(f"      {'; '.join(landing.notes)}")
 
+    ded = estimate_deductions(landing, meta.detect_rate)
+    for line in ded.summary().splitlines():
+        print(f"      {line}")
+
     print("[5/5] 產出報告 ...")
     charts = plot_angles(ang, out_dir, landing)
-    report = write_html(out_dir / "report.html", video_path.name, meta, stats, ang, landing, charts)
+    report = write_html(out_dir / "report.html", video_path.name, meta, stats, ang, landing, charts, ded)
     if render_video:
         render(video_path, clean, out_dir / "annotated.mp4", landing.landing_frame)
 

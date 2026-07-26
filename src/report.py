@@ -77,6 +77,7 @@ def write_html(
     angles: pd.DataFrame,
     landing: LandingResult,
     chart_paths: list[Path],
+    deductions=None,
 ) -> Path:
     """輸出單檔 HTML 報告（圖表以相對路徑引用）。"""
     rows = ""
@@ -99,6 +100,28 @@ def write_html(
     elif landing.notes:
         landing_html = "<p>" + "；".join(landing.notes) + "</p>"
 
+    ded_html = ""
+    if deductions is not None and landing.found:
+        conf = {"low": "低", "medium": "中"}.get(deductions.confidence, deductions.confidence)
+        if deductions.items:
+            items = "".join(
+                f"<tr><td>{i.category}</td><td>−{i.value:.2f}</td><td>{i.reason}</td></tr>"
+                for i in deductions.items
+            )
+            body = f"""<table>
+        <tr><th>項目</th><th>估算扣分</th><th>依據</th></tr>
+        {items}
+        <tr><td><strong>合計</strong></td><td><strong>−{deductions.total:.2f}</strong></td><td>可信度：{conf}</td></tr>
+        </table>"""
+        else:
+            body = f"<p>未偵測到明顯落地扣分項（可信度：{conf}）。</p>"
+        caveats = "".join(f"<li>{c}</li>" for c in deductions.caveats)
+        ded_html = f"""
+<h2>落地扣分估算</h2>
+<p class="warn">⚠ 這不是評分系統，不能取代裁判。以下僅是「量到的數字落在哪個扣分區間」的參考。</p>
+{body}
+<ul class="meta">{caveats}</ul>"""
+
     imgs = "".join(f'<img src="{p.name}" style="max-width:100%">' for p in chart_paths)
 
     html = f"""<!DOCTYPE html>
@@ -110,6 +133,7 @@ table {{ border-collapse: collapse; margin: .5rem 0 1.5rem; }}
 td, th {{ border: 1px solid #ccc; padding: .35rem .8rem; }}
 h1 {{ font-size: 1.5rem; }} h2 {{ font-size: 1.15rem; margin-top: 2rem; }}
 .meta {{ color: #666; font-size: .9rem; }}
+.warn {{ background: #fff8e1; border-left: 3px solid #f0ad4e; padding: .5rem .8rem; font-size: .9rem; }}
 </style></head><body>
 <h1>MAG Motion Coach 分析報告</h1>
 <p class="meta">影片：{video_name} ｜ {meta.n_frames} 幀 / {meta.n_frames / meta.fps:.1f} 秒 @ {meta.fps:.0f} fps
@@ -117,6 +141,7 @@ h1 {{ font-size: 1.5rem; }} h2 {{ font-size: 1.15rem; margin-top: 2rem; }}
 
 <h2>落地分析</h2>
 {landing_html}
+{ded_html}
 
 <h2>關節活動範圍</h2>
 <table><tr><th>關節</th><th>最小</th><th>最大</th></tr>{rows}</table>
