@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# 語言統計：compare.html 是獨立的前端比對播放器，體積大但不是專案主體。
+# 排除後 GitHub 才會正確顯示 Python（分析 pipeline）為主要語言。
+compare.html linguist-detectable=false

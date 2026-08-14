@@ -4,7 +4,7 @@
 
 靈感來自 FIG × Fujitsu 的 [Judging Support System](https://www.gymnastics.sport/site/pages/judges-support.php)，這是它的開源、單鏡頭、輕量版。
 
-## 功能（v0.2）
+## 功能（v0.3）
 
 **分析 pipeline**（`src/`，模組化）：
 
@@ -18,9 +18,28 @@
 | `report.py` | 曲線圖 PNG ＋ 單檔 HTML 報告 |
 | `annotate.py` | 用平滑後關鍵點重繪骨架疊圖影片（左右不同色） |
 
-**兩種用法**：
+**比對播放器**（`compare.html`，單檔前端工具）：
 
-> ⚠️ **需要 Python 3.10–3.12**。mediapipe 不支援 3.13+，太新的版本會裝到殘缺套件，出現 `module 'mediapipe' has no attribute 'solutions'`。建議 `python3.12 -m venv .venv` 建虛擬環境。
+雙擊開啟即可用，不需要 Python、不需要網路，影片不會上傳到任何地方。
+
+| 功能 | 說明 |
+|---|---|
+| 並排雙影片 | 拖曳兩支影片進左右播放槽（選手 vs 示範，或訓練前後） |
+| 時間軸同步 | 手動標記同步點，或用自動同步對齊兩段影片的起始時機 |
+| 逐幀檢視 | ±1 幀 / ±10 幀步進、0.1×–2× 變速、區段循環 |
+| 疊影模式 | 兩段影片半透明疊合，透明度可調，直接看軌跡差異 |
+| 骨架疊圖 | 切換顯示姿態骨架 |
+| 畫線標註 | 在畫面上拉輔助線量姿勢，可一鍵清除 |
+| 角度曲線 | 兩段影片的關節角度曲線疊在同一張圖上比對 |
+
+```bash
+# 直接用瀏覽器開啟，或
+open compare.html
+```
+
+**三種用法**：
+
+> ⚠️ **需要 Python 3.10–3.12**（比對播放器不需要）。mediapipe 不支援 3.13+，太新的版本會裝到殘缺套件，出現 `module 'mediapipe' has no attribute 'solutions'`。建議 `python3.12 -m venv .venv` 建虛擬環境。
 
 ```bash
 pip install -r requirements.txt
@@ -53,7 +72,8 @@ CLI 輸出到 `<影片名>_analysis/`：`report.html`、曲線圖、逐幀 CSV�
 - [x] **v0.1** 骨架疊圖 + 關節角度 CSV
 - [x] **v0.2** 時序後處理、落地分析、HTML 報告、Streamlit 介面
 - [x] **v0.2.1** 落地扣分估算（移步／緩衝深度／穩定時間 → 扣分區間參考）
-- [ ] **v0.3** 動作比對：兩段影片並排、角度曲線疊圖（選手 vs 示範）
+- [x] **v0.3** 動作比對：兩段影片並排、時間軸同步、疊影、角度曲線疊圖（選手 vs 示範）
+- [ ] **v0.3.1** 比對播放器直接讀 pipeline 產出的 `angles.csv`，免手動對齊
 - [ ] **v0.4** 換強一點的姿態模型（RTMPose）＋ 旋轉計數
 - [ ] **v0.5** 器械模組：吊環/鞍馬靜止力量動作的角度判定
 - [ ] **v1.0** 動作要素辨識（需自建標註資料集，時序模型）
@@ -65,6 +85,7 @@ mag-motion-coach/
 ├── README.md
 ├── requirements.txt
 ├── app.py               # Streamlit 網頁介面
+├── compare.html         # 並排比對播放器（單檔，免安裝）
 └── src/
     ├── analyze.py       # CLI 入口
     ├── pose_extract.py
