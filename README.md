@@ -1,5 +1,16 @@
 # MAG Motion Coach 🤸
 
+> **English summary** — Open source pose analysis for men's artistic gymnastics (MAG) training video.
+> Feed it a single-camera clip and it returns a coaching report: joint-angle curves over time,
+> landing quality metrics (buffer knee angle, step distance, time to stability), landing deduction
+> estimates mapped to FIG deduction bands, and a skeleton-overlay video. A companion single-file
+> browser tool (`compare.html`) plays two clips side by side — athlete vs. reference, or before/after —
+> with timeline sync, frame stepping, onion-skin overlay and angle-curve comparison.
+>
+> Everything runs locally; training footage is never uploaded anywhere. Python 3.10–3.12 + MediaPipe
+> for the analysis pipeline, vanilla JS for the comparison player. MIT licensed.
+> **Documentation below is in Traditional Chinese** — open an issue if you'd like it in English.
+
 男子競技體操（MAG）訓練影片分析工具。給教練與選手用：上傳影片，自動輸出姿態分析報告——關節角度曲線、落地品質評估、骨架疊圖影片。
 
 靈感來自 FIG × Fujitsu 的 [Judging Support System](https://www.gymnastics.sport/site/pages/judges-support.php)，這是它的開源、單鏡頭、輕量版。
