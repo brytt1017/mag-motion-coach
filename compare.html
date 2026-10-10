@@ -60,7 +60,7 @@
 <body>
 <header>
   <h1>🤸 並排比對播放器</h1>
-  <span class="hint">把兩支影片拖進左右框（或點擊選檔）→ 各自對到同一個瞬間（如起跳）→ 按「設為同步點」</span>
+  <span class="hint">把兩支影片拖進左右框（或點擊選檔）→ 各自對到同一個瞬間（如起跳）→ 按「設為同步點」（也可各自載入 pipeline 產出的 angles.csv，自動同步會改用真實關節角度，更準）</span>
 </header>
 
 <div class="videos">
@@ -76,6 +76,8 @@
       <button class="small" data-m2>⏱2</button>
       <button class="small" data-mirror>鏡像</button>
       <button class="small" data-roi>🎯 框選手</button>
+      <button class="small" data-csv>📄 CSV</button>
+      <input type="file" class="csvInput" accept=".csv" style="display:none">
       <button class="small" data-swap>📂 更換</button>
     </div>
   </div>
@@ -91,6 +93,8 @@
       <button class="small" data-m2>⏱2</button>
       <button class="small" data-mirror>鏡像</button>
       <button class="small" data-roi>🎯 框選手</button>
+      <button class="small" data-csv>📄 CSV</button>
+      <input type="file" class="csvInput" accept=".csv" style="display:none">
       <button class="small" data-swap>📂 更換</button>
     </div>
   </div>
@@ -158,7 +162,7 @@
     const drop = el.querySelector(".drop");
     const timeEl = el.querySelector(".time");
     const bar = el.querySelector(".vscrub");
-    const slot = { el, video: null, timeEl, bar };
+    const slot = { el, video: null, timeEl, bar, csv: null };
     const key = id === "slotA" ? "A" : "B";
 
     bar.addEventListener("input", () => {
@@ -174,6 +178,8 @@
       if (slot.video) slot.video.remove();
       // 換片後舊的標記與同步都失效，一併重置
       slot.marks = { m1: null, m2: null };
+      slot.csv = null;
+      el.querySelector("[data-csv]").textContent = "📄 CSV";
       if (typeof updateMarks === "function") updateMarks();
       if (state.synced) {
         state.synced = false;
@@ -207,6 +213,31 @@
     el.querySelector("[data-swap]").addEventListener("click", openPicker);
     el.querySelector("[data-mirror]").addEventListener("click", () =>
       el.classList.toggle("mirror"));
+
+    // 讀取 pipeline 產出的 angles.csv（analyze.py 跑完後 <影片名>_analysis/angles.csv）
+    // 有了真實關節角度，自動同步就不用再靠像素質心估測，也不用先框選手範圍
+    const csvBtn = el.querySelector("[data-csv]");
+    const csvInput = el.querySelector(".csvInput");
+    csvBtn.addEventListener("click", () => csvInput.click());
+    csvInput.addEventListener("change", () => {
+      const f = csvInput.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          slot.csv = parseAngleCsv(reader.result);
+          csvBtn.textContent = "📄 CSV✓";
+          say(`${key} 已載入角度 CSV：${f.name}（${slot.csv.time.length} 幀）——按「自動同步」會改用關節角度對齊`);
+        } catch (e) {
+          slot.csv = null;
+          csvBtn.textContent = "📄 CSV";
+          say(`❌ ${f.name} 不是有效的 angles.csv：${e.message}`);
+        }
+      };
+      reader.onerror = () => say(`❌ 讀取 ${f.name} 失敗`);
+      reader.readAsText(f);
+      csvInput.value = "";
+    });
 
     // ROI 框選手：拖一個框圈住選手活動範圍，姿態追蹤只看框內（人小/雜訊多時大幅提升準度）
     slot.roi = null;
@@ -445,6 +476,64 @@
     return a.map(x => (x - m) / sd);
   }
 
+  // === v0.3.1：直接讀 Python pipeline 產出的 angles.csv，免像素估測、免框選手 ===
+  // analyze.py 跑完一支影片會輸出 <影片名>_analysis/angles.csv（frame, time_s, 8 個關節角度,
+  // hip_height, trunk_lean, ankle_x, ankle_y）。兩邊都載入的話，自動同步改吃這份真實關節角度數據。
+  function parseAngleCsv(text) {
+    const lines = text.trim().split(/\r?\n/);
+    if (lines.length < 2) throw new Error("檔案是空的");
+    const header = lines[0].split(",").map(s => s.trim());
+    const timeIdx = header.indexOf("time_s");
+    if (timeIdx < 0) throw new Error("找不到 time_s 欄位，確定是 pipeline 輸出的 angles.csv 嗎？");
+    const cols = {};
+    header.forEach((h, i) => { if (i !== timeIdx) cols[h] = []; });
+    const time = [];
+    for (let i = 1; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      const cells = lines[i].split(",");
+      time.push(parseFloat(cells[timeIdx]));
+      header.forEach((h, j) => { if (j !== timeIdx) cols[h].push(parseFloat(cells[j])); });
+    }
+    if (!time.length) throw new Error("沒有任何資料列");
+    return { time, cols };
+  }
+
+  // 跟 pose_extract 系列的 JOINTS 對應（見 src/angles.py），拿來當「動作能量」的依據
+  const ANGLE_COLS = ["left_elbow", "right_elbow", "left_shoulder", "right_shoulder",
+                       "left_hip", "right_hip", "left_knee", "right_knee", "trunk_lean"];
+
+  // 把 CSV 欄位重取樣成跟 motionCurve() 一樣的 {energy, posy} 結構，
+  // 這樣 autoSyncBtn 後面接的 zscore / pearsonSweep / analyze 完全不用改
+  function csvToCurve(csv, duration) {
+    const step = 1 / SAMPLE_FPS, n = Math.floor(duration / step);
+    const t = csv.time, T = t.length;
+    const posySrc = csv.cols.hip_height;
+    if (!posySrc) throw new Error("CSV 缺少 hip_height 欄位，確定是 pipeline 輸出的 angles.csv 嗎？");
+    const angleCols = ANGLE_COLS.filter(c => csv.cols[c]);
+    if (!angleCols.length) throw new Error("CSV 沒有任何關節角度欄位");
+    const posy = new Float32Array(n), energy = new Float32Array(n);
+    let k = 0, prevAngles = null;
+    const lerp = (arr, frac) => {
+      const a0 = arr[k], a1 = (k + 1 < T) ? arr[k + 1] : arr[k];
+      return a0 + (a1 - a0) * frac;
+    };
+    for (let i = 0; i < n; i++) {
+      const ti = i * step;
+      while (k < T - 2 && t[k + 1] < ti) k++;
+      const t0 = t[k], t1 = (k + 1 < T) ? t[k + 1] : t0;
+      const frac = t1 > t0 ? Math.max(0, Math.min(1, (ti - t0) / (t1 - t0))) : 0;
+      posy[i] = lerp(posySrc, frac);
+      const cur = angleCols.map(c => lerp(csv.cols[c], frac));
+      if (prevAngles) {
+        let s = 0;
+        for (let j = 0; j < cur.length; j++) s += Math.abs(cur[j] - prevAngles[j]);
+        energy[i] = s / cur.length;
+      }
+      prevAngles = cur;
+    }
+    return { energy, posy };
+  }
+
   // 滑動所有時間差，對每個重疊區算 Pearson 相關（逐窗正規化，比全域內積可靠）
   // 回傳 lag（樣本數）：b[i + lag] 對應 a[i]
   function pearsonAt(a, b, lag) {
@@ -487,9 +576,10 @@
     const btn = document.getElementById("autoSyncBtn");
     btn.disabled = true;
     const tA = A.currentTime, tB = B.currentTime;
+    const useCsv = !!(slots.A.csv && slots.B.csv);
     try {
-      const cvA = await motionCurve(A, "A", slots.A.roi);
-      const cvB = await motionCurve(B, "B", slots.B.roi);
+      const cvA = useCsv ? csvToCurve(slots.A.csv, A.duration) : await motionCurve(A, "A", slots.A.roi);
+      const cvB = useCsv ? csvToCurve(slots.B.csv, B.duration) : await motionCurve(B, "B", slots.B.roi);
       // 對齊用「移動質心位置」曲線（跨場館可比），Pearson 全域掃描
       const pa = zscore(interpNaN(cvA.posy));
       const pb = zscore(interpNaN(cvB.posy));
@@ -501,7 +591,8 @@
       // 動作段/循環/差異點用能量曲線
       analyze(zscore(Array.from(cvA.energy)), zscore(Array.from(cvB.energy)), lag, score, null);
       await seekTo(A, state.loopStart); alignB();
-      say(`⚡ 自動同步完成［移動質心］（B 偏移 ${state.offset >= 0 ? "+" : ""}${state.offset.toFixed(2)}s，相似度 ${score.toFixed(2)}）${score < 0.4 ? "——信心偏低，建議逐格檢查，不準就用 ⏱1 錨點同步" : ""}`);
+      const srcLabel = useCsv ? "關節角度 CSV" : "移動質心";
+      say(`⚡ 自動同步完成［${srcLabel}］（B 偏移 ${state.offset >= 0 ? "+" : ""}${state.offset.toFixed(2)}s，相似度 ${score.toFixed(2)}）${score < 0.4 ? "——信心偏低，建議逐格檢查，不準就用 ⏱1 錨點同步" : ""}`);
     } catch (e) {
       await seekTo(A, tA); await seekTo(B, tB);
       say(`❌ 自動同步失敗：${e.message}`);
